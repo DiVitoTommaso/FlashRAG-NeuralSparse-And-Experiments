@@ -117,6 +117,7 @@ class BiReranker(BaseReranker):
             pooling_method=config["rerank_pooling_method"],
             max_length=self.max_length,
             use_fp16=config["rerank_use_fp16"],
+            instruction="represent documents for rerank"
         )
 
     def get_rerank_scores(self, query_list, doc_list, batch_size):

@@ -98,7 +98,7 @@ class SKRJudger(BaseJudger):
         for start_idx in range(0, len(questions), self.batch_size):
             batch_question = questions[start_idx : start_idx + self.batch_size]
             batch_emb = self.encode(batch_question)
-            scores, batch_idxs = self.faiss.search(batch_emb, k=self.topk)
+            scores, batch_idxs = self.faiss.__call__(batch_emb, k=self.topk)
 
             for idxs in batch_idxs:
                 topk_samples = [self.training_data[idx]["judgement"].strip() for idx in idxs]

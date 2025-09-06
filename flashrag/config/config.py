@@ -179,7 +179,7 @@ class Config:
                         multi_retriever_config["rerank_pooling_method"] = set_pooling_method(rerank_model_name, model2pooling)
             
             # set config for each retriever
-            for retriever_config in retriever_config_list:
+            for i, retriever_config in enumerate(retriever_config_list):
                 if "instruction" not in retriever_config:
                     retriever_config["instruction"] = None
                 if "bm25_backend" not in retriever_config:
@@ -192,9 +192,11 @@ class Config:
                     retriever_config["corpus_path"] = None
                 if "use_sentence_transformer" not in retriever_config:
                     retriever_config["use_sentence_transformer"] = False
-                retriever_config = set_retrieval_keys(model2path, model2pooling, method2index, retriever_config)
-                
-                # set other necessary keys as base setting
+
+                # This call may return a new dict — update the list explicitly
+                updated_config = set_retrieval_keys(model2path, model2pooling, method2index, retriever_config)
+
+                # Add fallback values
                 keys = [
                     "retrieval_use_fp16",
                     "retrieval_query_max_length",
@@ -207,10 +209,11 @@ class Config:
                     "retrieval_cache_path",
                 ]
                 for key in keys:
-                    if key not in retriever_config:
-                        retriever_config[key] = self.final_config.get(key, None)
-                retriever_config["save_retrieval_cache"] = False
-                retriever_config["use_retrieval_cache"] = False
+                    if key not in updated_config:
+                        updated_config[key] = self.final_config.get(key, None)
+
+                # update the list element
+                retriever_config_list[i] = updated_config
         
         # set model path
         generator_model = self.final_config["generator_model"]

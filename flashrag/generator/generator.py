@@ -1,6 +1,9 @@
+import gc
 from typing import List
 from copy import deepcopy
 import warnings
+
+import torch
 from tqdm import tqdm
 from tqdm.auto import trange
 import numpy as np
@@ -29,10 +32,11 @@ class BaseGenerator:
     def config(self, config_data):
         self._config = config_data
         self.update_config()
-    
+
     def update_config(self):
         self.update_base_setting()
         self.update_additional_setting()
+
     def update_base_setting(self):
         self.model_name = self._config["generator_model"]
         self.model_path = self._config["generator_model_path"]
@@ -42,7 +46,7 @@ class BaseGenerator:
         self.device = self._config["device"]
         self.gpu_num = self._config['gpu_num']
         self.generation_params = self._config["generation_params"]
-    
+
     def update_additional_setting(self):
         pass
 
@@ -78,6 +82,7 @@ class EncoderDecoderGenerator(BaseGenerator):
         self.model.cuda()
         self.model.eval()
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+
     def update_additional_setting(self):
         self.fid = self._config["use_fid"]
 
@@ -128,7 +133,7 @@ class EncoderDecoderGenerator(BaseGenerator):
 
         responses = []
         for idx in trange(0, len(input_list), batch_size, desc="Generation process: "):
-            batched_prompts = input_list[idx : idx + batch_size]
+            batched_prompts = input_list[idx: idx + batch_size]
             if self.fid:
                 # assume each input in input_list is a list, contains K string
                 input_ids, attention_mask = self.encode_passages(batched_prompts)
@@ -154,7 +159,9 @@ class EncoderDecoderGenerator(BaseGenerator):
                     else:
                         max_new_tokens = 32
 
-                    outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens, pad_token_id=self.tokenizer.pad_token_id, decoder_start_token_id=self.tokenizer.pad_token_id)
+                    outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                                  pad_token_id=self.tokenizer.pad_token_id,
+                                                  decoder_start_token_id=self.tokenizer.pad_token_id)
                 else:
                     outputs = self.model.generate(**inputs, **generation_params)
             outputs = self.tokenizer.batch_decode(
@@ -173,27 +180,70 @@ class VLLMGenerator(BaseGenerator):
 
     def __init__(self, config):
         super().__init__(config)
-        
+
         from vllm import LLM
-        if self.use_lora:
-            self.model = LLM(
-                self.model_path,
-                tensor_parallel_size = self.tensor_parallel_size,
-                gpu_memory_utilization = self.gpu_memory_utilization,
-                enable_lora = True,
-                max_lora_rank = 64,
-                max_logprobs = 32016,
-                max_model_len = self.max_model_len
-            )
-        else:
-            self.model = LLM(
-                self.model_path,
-                tensor_parallel_size = self.tensor_parallel_size,
-                gpu_memory_utilization = self.gpu_memory_utilization,
-                max_logprobs = 32016,
-                max_model_len = self.max_model_len
-            )
+
+        try:
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            gc.collect()
+
+            if self.use_lora:
+                self.model = LLM(
+                    self.model_path,
+                    tensor_parallel_size=self.tensor_parallel_size,
+                    gpu_memory_utilization=self.gpu_memory_utilization,
+                    enable_lora=True,
+                    max_lora_rank=64,
+                    max_logprobs=32016,
+                    max_model_len=self.max_model_len,
+                    dtype='float16'
+                )
+            else:
+                self.model = LLM(
+                    self.model_path,
+                    tensor_parallel_size=self.tensor_parallel_size,
+                    gpu_memory_utilization=self.gpu_memory_utilization,
+                    max_logprobs=32016,
+                    max_model_len=self.max_model_len,
+                    dtype='float16'
+                )
+            err = False
+        except KeyError:
+            err = True
+
+        # For some reason there is some problem with load of bitandbytes and if fail it causes OOM if not released memory manually
+        if err:
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            gc.collect()
+            if self.use_lora:
+                self.model = LLM(
+                    self.model_path,
+                    tensor_parallel_size=self.tensor_parallel_size,
+                    gpu_memory_utilization=self.gpu_memory_utilization,
+                    enable_lora=True,
+                    max_lora_rank=64,
+                    max_logprobs=32016,
+                    max_model_len=self.max_model_len,
+                    quantization='bitsandbytes',
+                    load_format='bitsandbytes'
+                )
+            else:
+                self.model = LLM(
+                    self.model_path,
+                    tensor_parallel_size=self.tensor_parallel_size,
+                    gpu_memory_utilization=self.gpu_memory_utilization,
+                    max_logprobs=32016,
+                    max_model_len=self.max_model_len,
+                    quantization='bitsandbytes',
+                    load_format='bitsandbytes'
+
+                )
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+
     def update_additional_setting(self):
         if "gpu_memory_utilization" not in self._config:
             self.gpu_memory_utilization = 0.85
@@ -211,11 +261,11 @@ class VLLMGenerator(BaseGenerator):
         self.max_model_len = self._config['generator_max_input_len']
 
     def generate(
-        self,
-        input_list: List[str],
-        return_raw_output=False,
-        return_scores=False,
-        **params,
+            self,
+            input_list: List[str],
+            return_raw_output=False,
+            return_scores=False,
+            **params,
     ):
         from vllm import SamplingParams
 
@@ -233,12 +283,17 @@ class VLLMGenerator(BaseGenerator):
         # handle param conflict
         generation_params = resolve_max_tokens(params, generation_params, prioritize_new_tokens=False)
 
-        # fix for llama3
-        if "stop" in generation_params:
-            generation_params["stop"].append("<|eot_id|>")
-            generation_params["include_stop_str_in_output"] = True
-        else:
-            generation_params["stop"] = ["<|eot_id|>"]
+        stop_tokens = []
+        if self.tokenizer.eos_token:
+            stop_tokens.append(self.tokenizer.eos_token)
+
+        # Add other known special tokens if they exist:
+        for token in ["</s>", "<|eot_id|>", "<|end_of_turn|>"]:
+            if token in self.tokenizer.all_special_tokens:
+                stop_tokens.append(token)
+
+        generation_params["stop"] = stop_tokens
+        generation_params["include_stop_str_in_output"] = False
 
         if return_scores:
             if "logprobs" not in generation_params:
@@ -305,7 +360,7 @@ class HFCausalLMGenerator(BaseGenerator):
 
         return model, tokenizer
 
-    def add_new_tokens(self, token_embedding_path, token_name_func=lambda idx: f"[ref{idx+1}]"):
+    def add_new_tokens(self, token_embedding_path, token_name_func=lambda idx: f"[ref{idx + 1}]"):
         import torch
         del self.model
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -343,12 +398,12 @@ class HFCausalLMGenerator(BaseGenerator):
         self.model.cuda()
 
     def generate(
-        self,
-        input_list: List[str],
-        batch_size=None,
-        return_scores=False,
-        return_dict=False,
-        **params,
+            self,
+            input_list: List[str],
+            batch_size=None,
+            return_scores=False,
+            return_dict=False,
+            **params,
     ):
         """Generate batches one by one. The generated content needs to exclude input."""
 
@@ -397,7 +452,7 @@ class HFCausalLMGenerator(BaseGenerator):
         for idx in trange(0, len(input_list), batch_size, desc="Generation process: "):
             with torch.inference_mode():
                 torch.cuda.empty_cache()
-                batched_prompts = input_list[idx : idx + batch_size]
+                batched_prompts = input_list[idx: idx + batch_size]
                 inputs = self.tokenizer(
                     batched_prompts,
                     return_tensors="pt",
@@ -414,7 +469,7 @@ class HFCausalLMGenerator(BaseGenerator):
 
                 generated_ids = outputs.sequences
                 logits = torch.stack(outputs.scores, dim=1).softmax(-1)
-                generated_ids = generated_ids[:, inputs["input_ids"].shape[-1] :]
+                generated_ids = generated_ids[:, inputs["input_ids"].shape[-1]:]
                 gen_score = torch.gather(logits, 2, generated_ids[:, :, None]).squeeze(-1).cpu().tolist()
                 scores.extend(gen_score)
 
@@ -502,7 +557,6 @@ class HFCausalLMGenerator(BaseGenerator):
         else:
             return responses
 
-
     def cal_gen_probs(self, prev, next):
         import torch
         input_ids = self.tokenizer.encode(prev, add_special_tokens=False)
@@ -512,7 +566,7 @@ class HFCausalLMGenerator(BaseGenerator):
         with torch.inference_mode():
             outputs = self.model(context_tensor)
             logits = outputs.logits
-            logits = logits[0, len(input_ids) - 1 : len(context_ids) - 1, :]
+            logits = logits[0, len(input_ids) - 1: len(context_ids) - 1, :]
             logits = logits.to(torch.float32).detach().cpu()
             # softmax to normalize
             probs = torch.softmax(logits, dim=-1)
@@ -537,8 +591,8 @@ class FastChatGenerator(HFCausalLMGenerator):
                 with torch.cuda.device(gpu_id):
                     device = torch.cuda.current_device()
                     gpu_properties = torch.cuda.get_device_properties(device)
-                    total_memory = gpu_properties.total_memory / (1024**3)
-                    allocated_memory = torch.cuda.memory_allocated() / (1024**3)
+                    total_memory = gpu_properties.total_memory / (1024 ** 3)
+                    allocated_memory = torch.cuda.memory_allocated() / (1024 ** 3)
                     available_memory = total_memory - allocated_memory
                     gpu_memory.append(available_memory)
             return gpu_memory

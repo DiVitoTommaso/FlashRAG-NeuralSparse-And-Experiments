@@ -1,0 +1,137 @@
+# ------------------------------------------------Global Paths------------------------------------------------#
+
+# Pooling methods for each embedding model
+model2pooling:
+  e5: "mean"
+  bge: "cls"
+  contriever: "mean"
+  jina: "mean"
+  dpr: "pooler"
+
+# Paths to various models
+model2path: {}
+# Indexes path for retrieval models
+method2index: {}
+
+# ------------------------------------------------Environment Settings------------------------------------------------#
+# Directory paths for data and outputs
+data_dir: "data/"
+save_dir: "out/"
+
+gpu_id: "0"
+device: 'cuda'
+tensor_parallel_size: 1
+
+# Questions - Answer dataset to use
+dataset_name: "ms_marco" # name of the dataset in data_dir
+split: ["dev"] # dataset split to load (e.g. train,dev,test)
+test_sample_num: 300 # number of samples to test (only work in dev/test split), if None, test all samples
+random_sample: False # whether to randomly sample the test samples
+
+# Seed for reproducibility
+seed: 18042001
+
+# Whether save intermediate data
+save_intermediate_data: False
+save_note: "experiment"
+use_reranker: False
+
+# -------------------------------------------------Retrieval Settings------------------------------------------------#
+retrieval_method: "e5" # name or path of the retrieval model. !!!
+retrieval_model_path: "retriever/e5-base-v2" # path to the retrieval model !!!
+
+index_path: "indexes/e5_HNSW32.index" # set automatically if not provided. !!!
+corpus_path: "data/ms_marco/ms_marco_corpus.jsonl" # path to corpus in '.jsonl' format that store the documents !!!
+multimodal_index_path_dict: ~ # use for multimodal retriever
+
+instruction: ~ # instruction for the retrieval model
+retrieval_topk: 5 # number of retrieved documents
+retrieval_batch_size: 256 # batch size for retrieval
+retrieval_use_fp16: True # whether to use fp16 for retrieval model
+retrieval_query_max_length: 128 # max length of the query
+save_retrieval_cache: False # whether to save the retrieval cache
+use_retrieval_cache: False # whether to use the retrieval cache
+retrieval_cache_path: ~ # path to the retrieval cache
+retrieval_pooling_method: "mean" # set automatically if not provided
+
+bm25_backend: pyserini # pyserini, bm25s
+use_sentence_transformer: False # To transform sentences
+silent_retrieval: True # whether to silent the retrieval process
+
+seismic_query_cut: 10 # !!!
+seismic_heap_factor: 0.8 # !!!
+seismic_max_tokens_length: 30 # !!!
+
+faiss_gpu: False # whether use gpu to hold index for faiss
+# -------------------------------------------------Reranker Settings------------------------------------------------#
+rerank_model_name: "t5" # reranker models (T5, Mulin, None)
+rerank_model_path: "reranker/monot5-base-msmarco" # path to reranker model, path will be automatically find in `model2path`
+rerank_pooling_method: "mean" # pooling method for reranker
+rerank_topk: 5 # number of remain documents after reranking
+rerank_max_length: 512 # Max document tokens length
+rerank_batch_size: 256 # batch size for reranker
+rerank_use_fp16: True # Use fp16 for tensor cores
+
+# If you want to use multi retrievers, you can set the following parameters
+use_multi_retriever: False # whether to use multi retrievers
+multi_retriever_setting:
+  merge_method: "concat" # support 'concat', 'rrf', 'rerank'
+  topk: 5 # final remain documents, only used in 'rrf' and 'rerank' merge
+  rerank_model_name: ~
+  rerank_model_path: ~
+  retriever_list:
+    - retrieval_method: "e5"
+      retrieval_topk: 5
+      index_path: ~
+      retrieval_model_path: ~
+    - retrieval_method: "bm25"
+      retrieval_topk: 5
+      index_path: ~
+      retrieval_model_path: ~
+
+# -------------------------------------------------Refiner Settings------------------------------------------------#
+refiner_topk: 5
+refiner_pooling_method: 'mean'
+refiner_encode_max_length: 1024
+refiner_mini_batch_size: 4
+refiner_name: ~
+refiner_model_path: ~
+refiner_input_prompt_flag: 'Summarize the given documents'
+
+# -------------------------------------------------Generator Settings------------------------------------------------#
+framework: vllm # inference frame work of LLM, supporting: 'hf','vllm','fschat', 'openai'
+generator_model: "llama3.1-8B-4bit" # name or path of the generator model
+generator_model_path: "generator/llama3.1-8B-4bit"
+generator_max_input_len: 2048 # max length of the input
+generator_batch_size: 2 # batch size for generation, invalid for vllm
+quantization: 'bitsandbytes' # [awq, bitsandbytes, none] Required for vLLM framework if you are using a quantized model
+
+generation_params:
+  max_tokens: 32
+  do_sample: False
+  #temperature: 0.6
+  #top_p: 0.9
+use_fid: False # whether to use FID, only valid in encoder-decoder model
+gpu_memory_utilization: 0.9 # ratio of gpu's memory usage for generator
+
+# setting for openai model, only valid in openai framework
+openai_setting:
+  api_key: ~
+  base_url: ~
+# -------------------------------------------------Evaluation Settings------------------------------------------------#
+# Metrics to evaluate the result
+metrics: ["em", "f1", "acc", "precision", "recall"] # Default FlashRAG metrics
+advanced_metrics: ['rouge', 'bertscore'] # Advanced current state of art metrics
+
+# Specify setting for metric, will be called within certain metrics
+metric_setting:
+  retrieval_recall_topk: 5
+  bleu_smooth: False
+  bleu_max_order: 4
+  tokenizer_name: "gpt-4"
+llm_judge_setting:
+  model_name: ~
+  model_path: ~
+# ------------------------------------------------Cluster Configuration------------------------------------------------#
+remote_modules_address: 'localhost' # Used for remote modules
+vllm_distributed_address: 'localhost' # Used for distributed vLLM

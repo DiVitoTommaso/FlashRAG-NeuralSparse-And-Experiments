@@ -15,6 +15,7 @@ from flashrag.utils import get_reranker
 from flashrag.retriever.utils import load_corpus, load_docs, convert_numpy, judge_image, judge_zh
 from flashrag.retriever.encoder import Encoder, STEncoder, ClipEncoder
 
+
 import torch
 
 def cache_manager(func):
@@ -67,7 +68,10 @@ def cache_manager(func):
             )
 
         else:
-            results, scores = func(self, query=query, num=num, return_score=True)
+            if return_score:
+                results, scores, time = func(self, query=query, num=num, return_score=return_score)
+            else:
+                results, time = func(self, query=query, num=num, return_score=return_score)
 
         if self.save_cache:
             # merge result and score
@@ -84,9 +88,9 @@ def cache_manager(func):
                 self.cache[new_query] = doc_items
 
         if return_score:
-            return results, scores
+            return results, scores, time
         else:
-            return results
+            return results, time
 
     return wrapper
 
@@ -98,16 +102,24 @@ def rerank_manager(func):
 
     @functools.wraps(func)
     def wrapper(self, query, num=None, return_score=False):
-        results, scores = func(self, query=query, num=num, return_score=True)
-        if self.use_reranker:
-            results, scores = self.reranker.rerank(query, results)
-            if "batch" not in func.__name__:
-                results = results[0]
-                scores = scores[0]
         if return_score:
-            return results, scores
+            results, scores, time = func(self, query=query, num=num, return_score=return_score)
+            if self.use_reranker:
+                results, scores = self.reranker.rerank(query, results)
+                if "batch" not in func.__name__:
+                    results = results[0]
+                    scores = scores[0]
         else:
-            return results
+            results, time = func(self, query=query, num=num, return_score=return_score)
+            if self.use_reranker:
+                results = self.reranker.rerank(query, results)
+                if "batch" not in func.__name__:
+                    results = results[0]
+
+        if return_score:
+            return results, scores, time
+        else:
+            return results, time
 
     return wrapper
 
@@ -143,11 +155,7 @@ class BaseRetriever:
         self.use_cache = self._config["use_retrieval_cache"]
         self.cache_path = self._config["retrieval_cache_path"]
 
-        self.use_reranker = self._config["use_reranker"]
-        if self.use_reranker:
-            self.reranker = get_reranker(self._config)
-        else:
-            self.reranker = None
+        self.use_reranker = False
 
         if self.save_cache:
             self.cache_save_path = os.path.join(self._config["save_dir"], "retrieval_cache.json")
@@ -243,7 +251,10 @@ class BM25Retriever(BaseTextRetriever):
                 else:
                     self.corpus = corpus
             self.max_process_num = 8
-               
+
+            is_zh = judge_zh(self.corpus[0]["contents"])
+            if is_zh:
+                self.searcher.set_language("zh")
         elif self.backend == "bm25s":
             import Stemmer
             import bm25s
@@ -275,75 +286,102 @@ class BM25Retriever(BaseTextRetriever):
     def _search(self, query: str, num: int = None, return_score=False) -> List[Dict[str, str]]:
         if num is None:
             num = self.topk
+
         if self.backend == "pyserini":
-            is_zh = judge_zh(query)
-            if is_zh:
-                self.searcher.set_language("zh")
             hits = self.searcher.search(query, num)
             if len(hits) < 1:
-                if return_score:
-                    return [], []
-                else:
-                    return []
+                return ([], []) if return_score else []
 
             scores = [hit.score for hit in hits]
             if len(hits) < num:
                 warnings.warn("Not enough documents retrieved!")
-            else:
-                hits = hits[:num]
+            hits = hits[:num]
 
             if self.contain_doc:
                 all_contents = [json.loads(self.searcher.doc(hit.docid).raw())["contents"] for hit in hits]
                 results = [
                     {
-                        "id": hit.docid, 
                         "title": content.split("\n")[0].strip('"'),
                         "text": "\n".join(content.split("\n")[1:]),
                         "contents": content,
                     }
-                    for content, hit in zip(all_contents, hits)
+                    for content in all_contents
                 ]
             else:
                 results = load_docs(self.corpus, [hit.docid for hit in hits])
-        elif self.backend == "bm25s":
-            import bm25s
 
-            # query_tokens = self.tokenizer.tokenize([query], return_as="tuple", update_vocab=False)
-            query_tokens = bm25s.tokenize([query])
+        elif self.backend == "bm25s":
+            query_tokens = self.tokenizer.tokenize([query], return_as="tuple", update_vocab=False)
             results, scores = self.searcher.retrieve(query_tokens, k=num)
             results = list(results[0])
             scores = list(scores[0])
-        else:
-            assert False, "Invalid bm25 backend!"
 
-        if return_score:
-            return results, scores
         else:
-            return results
+            raise ValueError("Invalid bm25 backend!")
+
+        return (results, scores) if return_score else results
 
     def _batch_search(self, query, num: int = None, return_score=False):
-        if self.backend == "pyserini":
-            # TODO: modify batch method
-            results = []
-            scores = []
-            for _query in query:
-                item_result, item_score = self._search(_query, num, True)
-                results.append(item_result)
-                scores.append(item_score)
-        elif self.backend == "bm25s":
-            import bm25s
+        import time
+        query_time = {'encode_time': 0, 'search_time': 0, 'sum_time': 0}
+        if num is None:
+            num = self.topk
 
-            # query_tokens = self.tokenizer.tokenize(query, return_as="tuple", update_vocab=False)
-            query_tokens = bm25s.tokenize(query)
+        if isinstance(query, str):
+            query = [query]
+
+        start = time.time()
+
+        if self.backend == "pyserini":
+            qids = [str(i) for i in range(len(query))]
+            if hasattr(self.searcher, "batch_search"):
+                import multiprocessing
+                hits = self.searcher.batch_search(query, qids, k=num, threads=multiprocessing.cpu_count())
+                results = []
+                scores = []
+                for qid in qids:
+                    q_hits = hits[qid]
+                    q_scores = [h.score for h in q_hits]
+
+                    if self.contain_doc:
+                        contents = [json.loads(self.searcher.doc(h.docid).raw())["contents"] for h in q_hits]
+                        q_results = [
+                            {
+                                "title": c.split("\n")[0].strip('"'),
+                                "text": "\n".join(c.split("\n")[1:]),
+                                "contents": c,
+                            }
+                            for c in contents
+                        ]
+                    else:
+                        q_results = load_docs(self.corpus, [h.docid for h in q_hits])
+                    results.append(q_results)
+                    scores.append(q_scores)
+            else:
+                # Fallback manuale con thread
+                from concurrent.futures import ThreadPoolExecutor
+                results, scores = [], []
+                import multiprocessing
+                with ThreadPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                    futures = [executor.submit(self._search, q, num, True) for q in query]
+                    for f in futures:
+                        r, s = f.result()
+                        results.append(r)
+                        scores.append(s)
+
+        elif self.backend == "bm25s":
+            query_tokens = self.tokenizer.tokenize(query, return_as="tuple", update_vocab=False)
             results, scores = self.searcher.retrieve(query_tokens, k=num)
         else:
-            assert False, "Invalid bm25 backend!"
+            raise ValueError("Invalid bm25 backend!")
+
+        query_time['search_time'] = time.time() - start
+        query_time['sum_time'] = query_time['encode_time'] + query_time['search_time']
+
         results = results.tolist() if isinstance(results, np.ndarray) else results
         scores = scores.tolist() if isinstance(scores, np.ndarray) else scores
-        if return_score:
-            return results, scores
-        else:
-            return results
+
+        return (results, scores, query_time) if return_score else (results, query_time)
 
 
 class DenseRetriever(BaseTextRetriever):
@@ -450,22 +488,28 @@ class DenseRetriever(BaseTextRetriever):
         if num is None:
             num = self.topk
         batch_size = self.batch_size
-
-        results = []
-        scores = []
+        
+        query_time= {'encode_time': 0, 'search_time': 0}
+        start = time.time()
         emb = self.encoder.encode(query, batch_size=batch_size, is_query=True)
+        query_time['encode_time'] = time.time() - start
+        
+        start = time.time()
         scores, idxs = self.index.search(emb, k=num)
+        query_time['search_time'] = time.time() - start
+        query_time['sum_time'] = query_time['encode_time'] + query_time['search_time']
+
         scores = scores.tolist()
         idxs = idxs.tolist()
 
         flat_idxs = sum(idxs, [])
         results = load_docs(self.corpus, flat_idxs)
-        results = [results[i * num : (i + 1) * num] for i in range(len(idxs))]
+        results = [results[i * num: (i + 1) * num] for i in range(len(idxs))]
 
         if return_score:
-            return results, scores
+            return results, scores, query_time
         else:
-            return results
+            return results, query_time
 
 
 class MultiModalRetriever(BaseRetriever):
@@ -559,7 +603,7 @@ class MultiModalRetriever(BaseRetriever):
         scores = []
 
         for start_idx in tqdm(range(0, len(query), batch_size), desc="Retrieval process: ", disable=self.silent):
-            query_batch = query[start_idx : start_idx + batch_size]
+            query_batch = query[start_idx: start_idx + batch_size]
             batch_emb = self.encoder.encode(query_batch, modal=query_modal)
             batch_scores, batch_idxs = self.index_dict[target_modal].search(batch_emb, k=num)
 
@@ -568,7 +612,7 @@ class MultiModalRetriever(BaseRetriever):
 
             flat_idxs = sum(batch_idxs, [])
             batch_results = load_docs(self.corpus, flat_idxs)
-            batch_results = [batch_results[i * num : (i + 1) * num] for i in range(len(batch_idxs))]
+            batch_results = [batch_results[i * num: (i + 1) * num] for i in range(len(batch_idxs))]
 
             scores.extend(batch_scores)
             results.extend(batch_results)
@@ -754,7 +798,7 @@ class MultiRetrieverRouter:
             return result_list, score_list
         elif self.merge_method == "rrf":
             if (isinstance(result_list[0], dict) and len(set([doc["corpus_path"] for doc in result_list])) > 1) or (
-                isinstance(result_list[0], list) and len(set([doc["corpus_path"] for doc in result_list[0]])) > 1
+                    isinstance(result_list[0], list) and len(set([doc["corpus_path"] for doc in result_list[0]])) > 1
             ):
                 warnings.warn(
                     "Using multiple corpus may lead to conflicts in DOC IDs, which may result in incorrect rrf results!"
@@ -1034,17 +1078,10 @@ class SparseRetriever(BaseTextRetriever):
             # Convert to list for each document
             return [embeddings[i] for i in range(len(query))]
 
-    def search(self, query: list, num: int = None, return_score=False) -> (List[Dict], List[float]):
+    def search(self, query: str, num: int = None, return_score=False) -> (List[Dict], List[float]):
         """Search using sparse vector."""
         num = num or self.topk
-
-        query_vec = self._encode(query)
-        results, scores = self._seismic_search(query_vec, num)
-
-        if return_score:
-            return results, scores
-        else:
-            return results
+        return self.batch_search(query, num, return_score)
 
     def batch_search(self, query, num=None, return_score=False):
         """Search using sparse vector."""
@@ -1059,7 +1096,9 @@ class SparseRetriever(BaseTextRetriever):
 
         embeddings = []
         batch = []
-        
+
+        query_time = {'encode_time': 0, 'query_time': 0}
+        start = time.time()
         # Encode
         for i in range(len(query)):
             # Process batch
@@ -1073,8 +1112,13 @@ class SparseRetriever(BaseTextRetriever):
             query_vec = self._encode(batch)
             embeddings.extend(query_vec)
 
+        query_time['encode_time'] = time.time() - start
+
         # Search
+        start = time.time()
         search_results = self._seismic_batch_search(embeddings, num)
+        query_time['search_time'] = time.time() - start
+        query_time['sum_time'] = query_time['encode_time'] + query_time['search_time']
 
         results = []
         scores = []
@@ -1088,17 +1132,11 @@ class SparseRetriever(BaseTextRetriever):
 
             results.append(tmp_results)
             scores.append(tmp_scores)
-        
-        if return_score:
-            return results, scores
-        else:
-            return results
 
-    def _seismic_search(self, query_vec: List[Dict[str, float]], k: int) -> (List[Dict], List[float]):
-        """Search using Seismic backend."""
-        # Convert query to Seismic format
-        results, scores = self.index_search(k, query_vec)
-        return results[0], scores[0]
+        if return_score:
+            return results, scores, query_time
+        else:
+            return results, query_time
 
     def _seismic_batch_search(self, query_vecs: List[Dict[str, float]], k: int) -> (
             List[List[Dict]], List[List[float]]):
@@ -1107,7 +1145,7 @@ class SparseRetriever(BaseTextRetriever):
 
     def index_search(self, k, query_vec):
         max_len = max(len(query) for query in query_vec)
-        pad_token = ""  # or whatever default is appropriate
+        pad_token = ""
 
         query_components = []
         query_values = []
