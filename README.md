@@ -731,3 +731,5 @@ Please kindly cite our paper if helps your research:
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=RUC-NLPIR/FlashRAG&type=Date)](https://star-history.com/#RUC-NLPIR/FlashRAG&Date)
+
+Important Note: This repository contains the integration with Sparse neural retrieval with Seismic and an experimental evaluation of RAG pipelines with FlashRAG. In the repository have been reported all notebooks with the results (plots) but the results files produced by running the configurations have been omitted due to their huge size. To reproduce the experiments instructions can be found in the file 'thesis.pdf' in the chapter experimental setup.
