@@ -1,0 +1,16 @@
+name: 'Retr-Reorder-Gen'
+
+dataset: [ 'nq' ]
+split: [ ['test'] ]
+
+retriever: [ 'e5', 'splade', 'bm25' ]
+retriever_topk: [ 1,2,3,4,5,6,7,8,9,10 ]
+
+reorder_strategy: [ 'sorted', 'random', 'alternated' ] # manca da eseguire 'alternated' sulla artes
+
+generator: [ 'generator/llama3-8B-w8a8', 'generator/llama3.2-1B-fp16', 'generator/llama3.2-3B-fp16' ]
+
+reranker:
+noise_docs:
+refiner:
+sliding_window:

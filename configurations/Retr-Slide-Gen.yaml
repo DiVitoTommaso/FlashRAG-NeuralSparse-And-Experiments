@@ -1,0 +1,16 @@
+name: 'Retr-Slide-Gen'
+
+dataset: [ 'nq' ]
+split: [ ['test'] ]
+
+retriever: [ 'e5', 'splade', 'bm25' ]
+retriever_topk: [ 10 ]
+
+sliding_window: [ 1,2,3,4,5,6,7,8,9,10 ]
+
+generator: [ 'generator/llama3.2-1B-fp16' ]
+
+reorder_strategy:
+noise_docs:
+reranker:
+refiner:

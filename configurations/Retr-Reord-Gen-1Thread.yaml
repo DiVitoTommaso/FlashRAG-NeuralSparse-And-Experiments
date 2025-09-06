@@ -1,0 +1,17 @@
+name: 'Retr-Reorder-Gen-1Thread'
+
+dataset: [ 'nq' ]
+split: [ ['test'] ]
+
+retriever: [ 'splade' ]
+retriever_topk: [ 1,2,3,4,5,6,7,8,9,10 ]
+
+reorder_strategy: [ 'sorted' ]
+
+generator: [ 'generator/llama3.2-1B-fp16' ]
+
+use_threading: False
+reranker:
+noise_docs:
+refiner:
+sliding_window:

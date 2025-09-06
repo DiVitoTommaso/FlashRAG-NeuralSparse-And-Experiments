@@ -1,0 +1,13 @@
+name: 'Gen_Only_Marco'
+
+dataset: [ 'msmarco' ]
+split: [ ['dev'] ]
+
+generator: [ 'generator/llama3-8B-w8a8', 'generator/llama3.2-1B-fp16', 'generator/llama3.2-3B-fp16' ]
+
+retriever:
+reranker:
+reorder_strategy:
+noise_docs:
+refiner:
+sliding_window:

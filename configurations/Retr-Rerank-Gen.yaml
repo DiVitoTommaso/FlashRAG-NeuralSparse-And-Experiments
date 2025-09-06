@@ -1,0 +1,18 @@
+name: 'Retr-Rerank-Gen'
+
+dataset: [ 'nq' ]
+split: [ ['test'] ]
+
+retriever: [ 'e5', 'splade', 'bm25' ]
+retriever_topk: [ 1,2,3,4,5,6,7,8,9,10 ]
+
+reranker: [ 'reranker/monot5-base-msmarco' ]
+reranker_topk: [ 1,2,3,4,5 ]
+
+generator: [ 'generator/llama3-8B-w8a8', 'generator/llama3.2-1B-fp16', 'generator/llama3.2-3B-fp16' ]
+
+
+reorder_strategy:
+noise_docs:
+refiner:
+sliding_window:
