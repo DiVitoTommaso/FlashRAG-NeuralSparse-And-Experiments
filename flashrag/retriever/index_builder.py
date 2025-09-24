@@ -23,6 +23,10 @@ import multiprocessing
 cores = str(multiprocessing.cpu_count())
 os.environ["RAYON_NUM_THREADS"] = cores
 
+try:
+    from seismic import SeismicIndex
+except:
+    pass
 
 class Index_Builder:
     r"""A tool class used to build an index used in retrieval."""
@@ -682,3 +686,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
